@@ -12,10 +12,10 @@ from aiortc import (
 )
 from aiortc.contrib.media import MediaPlayer, MediaRelay
 from av import VideoFrame
-from collections import Counter
+from datetime import datetime
 from dotenv import load_dotenv
 from fractions import Fraction
-from ultralytics import YOLO
+from ultralytics import YOLO, solutions
 from urllib.parse import quote_plus
 from typing import Optional
 
@@ -29,11 +29,16 @@ db_uri = f"mongodb+srv://{db_user}:{quote_plus(db_pass)}@{db_host}/{db_name}?ret
 
 mongo_client = pymongo.MongoClient(db_uri)
 db = mongo_client[db_name]
+customer_count_collection = db['customer_counts']
+area_collection = db['locations']
 
-model = YOLO("v1.yolo11m_seg.pt").to('cuda')
-input_dir = os.environ['MODEL_SOURCE']
+input_sources = os.environ['MODEL_SOURCE'].split(',') # ? save in db ?
+
 ROOT = os.path.dirname(__file__)
 pcs = set()
+
+source_tracks: dict[int, MediaStreamTrack] = {}
+inference_tasks: list[asyncio.Task] = []
 
 
 class YOLOInferenceTrack(MediaStreamTrack):
@@ -64,25 +69,44 @@ class YOLOInferenceTrack(MediaStreamTrack):
             self.latest_frame = frame
 
 
-async def run_inference(track: YOLOInferenceTrack):
+# async def count_customers(_id: int, frame: ):
+#     try:
+#         document = {
+#             'source': source,
+#             'timestamp': datetime.utcnow(),
+#             'counts': counts,
+#             'total_people': counts.get('person', 0),
+#         }
+#     except Exception as e:
+#         print(f"Error saving counts to DB for '{source}: {e}'")
+
+
+async def run_inference(_id: int, source: str, model: YOLO, track: YOLOInferenceTrack):
     loop = asyncio.get_running_loop()
 
     def inference_loop():
-        global counts
-        while True:
-            for frame in model.track(input_dir, tracker="bytetrack.yaml", conf=0.7, stream=True):
-                asyncio.run_coroutine_threadsafe(track.update(frame), loop)
-                # todo: push counts here
+        try:
+            while True:
+                for frame in model.track(
+                    source,
+                    tracker="bytetrack.yaml",
+                    conf=0.7,
+                    stream=True,
+                ):
+                    asyncio.run_coroutine_threadsafe(track.update(frame), loop)
+        except Exception as e:
+            print(f"Error in inference loop for '{source}': {e}")
+            time.sleep(5)
     await asyncio.to_thread(inference_loop)
 
 
-async def infer_and_create_tracks() -> tuple[
-    Optional[MediaStreamTrack],
-    Optional[MediaStreamTrack]
-]:
-    yolo_inference_track = YOLOInferenceTrack()
-    asyncio.create_task(run_inference(yolo_inference_track))
-    return (None, yolo_inference_track)
+async def initialize_sources():
+    for _id, source in enumerate(input_sources):
+        track = YOLOInferenceTrack()
+        source_tracks[_id] = track
+        model = YOLO("v1.yolo11m_seg.pt").to('cuda')
+        task = asyncio.create_task(run_inference(_id, source, model, track))
+        inference_tasks.append(task)
 
 
 async def index(request: web.Request) -> web.Response:
@@ -109,12 +133,9 @@ async def offer(request: web.Request) -> web.Response:
             await pc.close()
             pcs.discard(pc)
 
-    (audio, video) = await infer_and_create_tracks()
-    print(video)
-    if audio:
-        audio_sender = pc.addTrack(audio)
-    if video:
-        video_sender = pc.addTrack(video)
+    camera_key = request.query.get("camera_id")
+    track = source_tracks[int(camera_key) - 1] # todo: stardardize id
+    pc.addTrack(track)
 
     await pc.setRemoteDescription(offer)
     answer = await pc.createAnswer()
@@ -123,30 +144,40 @@ async def offer(request: web.Request) -> web.Response:
     return web.Response(
         content_type="application/json",
         text=json.dumps({
-            "sdp": pc.localDescription.sdp, "type": pc.localDescription.type
+            "sdp": pc.localDescription.sdp,
+            "type": pc.localDescription.type,
         }),
     )
 
 
+async def on_startup(app: web.Application) -> None:
+    await initialize_sources()
+    # initialize_region_counters()
+
+
 async def on_shutdown(app: web.Application) -> None:
+    for task in inference_tasks:
+        task.cancel()
+    await asyncio.gather(*inference_tasks, return_exceptions=True)
     coros = [pc.close() for pc in pcs]
     await asyncio.gather(*coros)
     pcs.clear()
 
 if __name__ == "__main__":
     app = web.Application()
+    app.on_startup.append(on_startup)
     app.on_shutdown.append(on_shutdown)
     app.router.add_get("/", index)
     app.router.add_get("/client.js", javascript)
     app.router.add_post("/offer", offer)
 
     cors_origins = os.environ["CORS_ALLOW_ORIGINS"].split(',')
-
     cors_methods = os.environ["CORS_ALLOW_METHODS"]
+    cors_headers = os.environ["CORS_ALLOW_HEADERS"]
+
     if ',' in cors_methods:
         cors_methods = cors_methods.split(',')
 
-    cors_headers = os.environ["CORS_ALLOW_HEADERS"]
     if ',' in cors_origins:
         cors_headers = cors_headers.split(',')
 
@@ -158,6 +189,7 @@ if __name__ == "__main__":
             expose_headers=cors_headers,
         ) for origin in cors_origins
     })
+
     for route in list(app.router.routes()):
         cors.add(route)
 
