@@ -39,7 +39,7 @@ class CameraWorker:
         loop = asyncio.get_running_loop()
 
         def run():
-            while self._stop_event.is_set():
+            while not self._stop_event.is_set():
                 try:
                     for result in self.model.track(
                         source=self.camera_url,
