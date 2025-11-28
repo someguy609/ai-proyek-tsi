@@ -4,12 +4,10 @@ def count_objects_in_regions(result, regions):
     regions: list of dicts: {'name': 'zone1', 'x1': x1, 'y1': y1, 'x2': x2, 'y2': y2}
     returns: { region_name: { class_label: count, ... }, ... }
     """
-    # result.names maps class id -> label for ultralytics results
     names = getattr(result, "names", None)
 
     counts = {region['name']: {} for region in regions}
 
-    # defensive attribute access — result.boxes may vary depending on model version
     try:
         boxes = result.boxes.xyxy.tolist()
         classes = result.boxes.cls.tolist()
