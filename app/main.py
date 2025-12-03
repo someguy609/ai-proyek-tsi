@@ -8,7 +8,7 @@ from fastapi.staticfiles import StaticFiles
 from app.core import config
 from app.database import connect_database, disconnect_database
 from app.media.tracks import create_track
-from app.services import camera_worker, webrtc_publisher
+from app.services import camera_worker, db_writer, webrtc_publisher
 from app.routes import index_router, offer_router
 
 
@@ -18,39 +18,60 @@ async def lifespan(app: FastAPI):
     workers = []
     publishers = []
     cameras = config.MODEL_SOURCE
+    frame_queues = []
+    count_queues = {}
+
     for camera_id, camera_url in enumerate(cameras):
         track = create_track(camera_id + 1)
         frame_queue = mp.Queue(maxsize=1)
+        frame_queues.append(frame_queue)
+        counts_queue = mp.Queue()
+        count_queues[camera_id + 1] = counts_queue
         locations = list(app.state.database['locations'].find({'camera_id': camera_id + 1}))
-        print(locations)
-        count_collection = app.state.database['customer_counts']
         worker = camera_worker.CameraWorker(
-            camera_id,
+            camera_id + 1,
             camera_url,
             config.MODEL_PATH,
             frame_queue,
+            counts_queue,
             locations,
         )
+        worker.daemon = True
         worker.start()
         workers.append(worker)
         publisher = asyncio.create_task(
             webrtc_publisher(camera_id, frame_queue, track)
         )
         publishers.append(publisher)
+    
+    count_collection = app.state.database['customer_counts']
+    db_task = asyncio.create_task(db_writer(count_queues, count_collection))
+
     yield
+    
     disconnect_database(app)
-    for task in publishers:
-        task.cancel()
-    asyncio.get_event_loop().run_until_complete(
-        asyncio.gather(*publishers, return_exceptions=True)
-    )
+
     for worker in workers:
         worker.stop()
+    
+    for q in frame_queues:
+        try:
+            q.put_nowait(None)
+        except Exception:
+            pass
+    
+    for task in publishers:
+        task.cancel()
+    
+    await asyncio.gather(*publishers, return_exceptions=True)
 
     for worker in workers:
         worker.join(timeout=5)
         if worker.is_alive():
             worker.terminate()
+
+    db_task.cancel()
+    await asyncio.gather(db_task, return_exceptions=True)
 
 app = FastAPI(
     title=config.APP_NAME,
