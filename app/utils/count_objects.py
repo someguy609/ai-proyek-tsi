@@ -36,16 +36,20 @@ def count_objects_in_regions(result, regions, counts):
         boxes = result.boxes.xyxy.tolist()
         classes = result.boxes.cls.tolist()
         ids = result.boxes.id.tolist()
+        # Get frame dimensions for normalization
+        height, width = result.orig_shape
     except Exception:
         # no detections -> return counts unchanged
         return counts
 
-    # Current positions of all tracks
+    # Current positions of all tracks (normalized to [0, 1])
     current_positions = {}
     for box, cls, id_ in zip(boxes, classes, ids):
         x1, y1, x2, y2 = box
         cx = (x1 + x2) / 2.0
         cy = (y1 + y2) / 2.0
+        cx_norm = cx / width
+        cy_norm = cy / height
         cls_idx = int(cls)
         if names:
             try:
@@ -57,7 +61,7 @@ def count_objects_in_regions(result, regions, counts):
 
         track_id = int(id_)
         current_positions[track_id] = {
-            'center': (cx, cy),
+            'center': (cx_norm, cy_norm),
             'class': cls_name
         }
 
