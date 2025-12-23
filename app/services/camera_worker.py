@@ -77,22 +77,27 @@ class CameraWorker(mp.Process):
 
                     if time.time() - last_db_flush_time > 60.0:
                         timestamp = datetime.now().replace(second=0, microsecond=0)
+                        previous_positions = self._counts.get('previous_positions', {})
                         for region_name, classes in self._counts.items():
-                            region = self._region_map[region_name]
-                            location_id = region['_id']
-                            for class_name, count_data in classes.items():
-                                doc = {
-                                    'timestamp': timestamp,
-                                    'camera_id': self.camera_id,
-                                    'location_id': location_id,
-                                    'gender': str(class_name),
-                                    'count': count_data['count'],
-                                }
-                                try:
-                                    self.counts_queue.put_nowait(doc)
-                                except Exception:
-                                    pass
-                        self._counts = {}
+                            if region_name == 'previous_positions':
+                                continue  # Skip the tracking data
+                            if region_name in self._region_map:
+                                region = self._region_map[region_name]
+                                location_id = region['_id']
+                                for class_name, count_data in classes.items():
+                                    doc = {
+                                        'timestamp': timestamp,
+                                        'camera_id': self.camera_id,
+                                        'location_id': location_id,
+                                        'gender': str(class_name),
+                                        'count': count_data['count'],
+                                    }
+                                    try:
+                                        self.counts_queue.put_nowait(doc)
+                                    except Exception:
+                                        pass
+                        # Reset counts but preserve previous_positions
+                        self._counts = {'previous_positions': previous_positions}
                         last_db_flush_time = time.time()
             except Exception as e:
                 logger.error(f'Worker {self.camera_id} error: {e}')

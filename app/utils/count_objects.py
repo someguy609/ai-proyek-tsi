@@ -109,8 +109,10 @@ def count_objects_in_regions(result, regions, counts):
                     counts[rname][cls_name] = {'entered': set(), 'count': 0}
 
                 # Check if this track crossed the line
-                prev_pos = counts['previous_positions'].get(track_id)
+                prev_pos = counts.get('previous_positions', {}).get(track_id)
                 if prev_pos is None:
+                    if 'previous_positions' not in counts:
+                        counts['previous_positions'] = {}
                     counts['previous_positions'][track_id] = (cx, cy)
                     continue
 
