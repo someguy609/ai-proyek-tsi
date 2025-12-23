@@ -1,3 +1,4 @@
+import logging
 import multiprocessing as mp
 import os
 import time
@@ -8,6 +9,10 @@ from typing import Optional
 from ultralytics import YOLO
 
 from app.utils import count_objects_in_regions
+
+logger = logging.getLogger(__name__)
+
+logging.getLogger('ultralytics').setLevel(logging.ERROR)
 
 
 class CameraWorker(mp.Process):
@@ -33,11 +38,16 @@ class CameraWorker(mp.Process):
         self._stop_event = mp.Event()
 
     def run(self):
-        print(f'[Worker {self.camera_id}] Started (PID: {os.getpid()})')
-        self.model = YOLO(self.model_path).to('cuda')
+        logger.info(f'Worker {self.camera_id} started (PID: {os.getpid()})')
+        try:
+            self.model = YOLO(self.model_path).to('cuda')
+        except Exception:
+            logger.warning(
+                f'Worker {self.camera_id}: CUDA not available, using CPU')
+            self.model = YOLO(self.model_path)
         last_db_flush_time = time.time()
-        print(
-            f'[Worker {self.camera_id}] Starting tracking loop for {self.camera_url}')
+        logger.info(
+            f'Worker {self.camera_id}: Starting tracking loop for {self.camera_url}')
         while not self._stop_event.is_set():
             try:
                 for result in self.model.track(
@@ -53,7 +63,8 @@ class CameraWorker(mp.Process):
                         break
                     annotated_frame = result.plot()
                     try:
-                        _, jpg = cv2.imencode('.jpg', annotated_frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+                        _, jpg = cv2.imencode('.jpg', annotated_frame, [
+                                              int(cv2.IMWRITE_JPEG_QUALITY), 80])
                         frame_bytes = jpg.tobytes()
                         if not self.frame_queue.empty():
                             self.frame_queue.get_nowait()
@@ -69,13 +80,13 @@ class CameraWorker(mp.Process):
                         for region_name, classes in self._counts.items():
                             region = self._region_map[region_name]
                             location_id = region['_id']
-                            for class_name, id_set in classes.items():
+                            for class_name, count_data in classes.items():
                                 doc = {
                                     'timestamp': timestamp,
                                     'camera_id': self.camera_id,
                                     'location_id': location_id,
                                     'gender': str(class_name),
-                                    'count': int(len(id_set)),
+                                    'count': count_data['count'],
                                 }
                                 try:
                                     self.counts_queue.put_nowait(doc)
@@ -84,9 +95,9 @@ class CameraWorker(mp.Process):
                         self._counts = {}
                         last_db_flush_time = time.time()
             except Exception as e:
-                print(f'[Worker {self.camera_id}] Error: {e}')
+                logger.error(f'Worker {self.camera_id} error: {e}')
                 time.sleep(1)
 
     def stop(self):
         self._stop_event.set()
-        print(f'[Worker {self.camera_id}] Stopped')
+        logger.info(f'Worker {self.camera_id} stopped')

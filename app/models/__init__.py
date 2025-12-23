@@ -1,2 +1,2 @@
-from .customer_count import *
-from .location import *
+from .customer_count import CustomerCount
+from .location import Location

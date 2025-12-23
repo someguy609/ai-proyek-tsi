@@ -1,9 +1,12 @@
 import asyncio
+import logging
 import numpy as np
 import cv2
 import multiprocessing as mp
 
 from app.media.tracks import AnnotatedFrameTrack
+
+logger = logging.getLogger(__name__)
 
 def _get_and_decode(frame_queue: mp.Queue, timeout: float = 0.1):
     try:
@@ -19,7 +22,7 @@ async def webrtc_publisher(
         frame_queue: mp.Queue,
         track: AnnotatedFrameTrack
 ):
-    print(f'[Publisher {camera_id}] Started')
+    logger.info(f'Publisher {camera_id} started')
     try:
         while True:
             try:
@@ -31,7 +34,7 @@ async def webrtc_publisher(
                 continue
             await track.update(annotated_frame)
     except asyncio.CancelledError:
-        print(f'[Publisher {camera_id}] Cancelled')
+        logger.info(f'Publisher {camera_id} cancelled')
         raise
     except Exception as e:
-        print(f'[Publisher {camera_id}] Error in update loop: {e}')
+        logger.error(f'Publisher {camera_id} error in update loop: {e}')
